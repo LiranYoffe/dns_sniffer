@@ -43,7 +43,7 @@ int main()
 		ready_socks = all_socks;
 		if (select(max_sock, &ready_socks, NULL, NULL, NULL) < 0)
 		{
-			perror("Selcet Error\n");
+			perror("Select Error\n");
 			return EXIT_FAILURE;
 		}
 		for (fd = 0; fd < max_sock; fd++)
@@ -156,7 +156,7 @@ int print_domain(unsigned char *dns_packet, int offset)
 
 	if (label_len >> 6 == 3)
 	{
-		domain_name_ptr = (dns_packet[dns_pos] << 8 & 0x3F) | dns_packet[dns_pos + 1];
+		domain_name_ptr = ((dns_packet[dns_pos] & 0x3F) << 8) | dns_packet[dns_pos + 1];
 		print_domain(dns_packet, domain_name_ptr);
 		return dns_pos + 2;
 	}
@@ -176,7 +176,7 @@ int print_domain(unsigned char *dns_packet, int offset)
 
 		if (label_len >> 6 == 3)
 		{
-			domain_name_ptr = (dns_packet[dns_pos] << 8 & 0x3F) | dns_packet[dns_pos + 1];
+			domain_name_ptr = ((dns_packet[dns_pos] & 0x3F) << 8) | dns_packet[dns_pos + 1];
 			domain_name[domain_name_pos] = '\0';
 			printf("%s.", domain_name);
 			print_domain(dns_packet, domain_name_ptr);
