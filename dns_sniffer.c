@@ -3,6 +3,7 @@
 #include <sys/socket.h>
 #include <netinet/ip.h>	 //Provides declarations for ipv4 header
 #include <netinet/udp.h> //Provides declarations for udp header
+#include <unistd.h>
 
 #define BUFFER_SIZE 65536
 #define DNS_PORT 53
@@ -10,6 +11,7 @@
 #define TYPE_A 1
 #define TYPE_AAAA 28
 #define TYPE_CNAME 5
+#define ANS_COUNT_IDX 6
 
 void handle_packet(int, unsigned int(unsigned char *));
 void parse_dns(unsigned char *, unsigned short);
@@ -19,13 +21,19 @@ unsigned int ipv6_offset(unsigned char *);
 
 int main()
 {
-	int sock_raw4, sock_raw6, max_sock, fd;
+	int sock_raw4, sock_raw6, min_sock, max_sock, fd;
 	fd_set all_socks, ready_socks;
 
 	sock_raw4 = socket(AF_INET, SOCK_RAW, IPPROTO_UDP);
-	sock_raw6 = socket(AF_INET6, SOCK_RAW, IPPROTO_UDP);
-	if (sock_raw4 < 0 || sock_raw6 < 0)
+	if (sock_raw4 < 0)
 	{
+		perror("Socket Error\n");
+		return EXIT_FAILURE;
+	}
+	sock_raw6 = socket(AF_INET6, SOCK_RAW, IPPROTO_UDP);
+	if (sock_raw6 < 0)
+	{
+		close(sock_raw4);
 		perror("Socket Error\n");
 		return EXIT_FAILURE;
 	}
@@ -36,7 +44,7 @@ int main()
 
 	// max_sock should be sock_raw6 but just in case...
 	max_sock = (sock_raw6 > sock_raw4 ? sock_raw6 : sock_raw4) + 1;
-
+	min_sock = (sock_raw6 > sock_raw4 ? sock_raw4 : sock_raw6);
 	while (1)
 	{
 		// Getting fds that are ready to be read
@@ -46,7 +54,7 @@ int main()
 			perror("Select Error\n");
 			return EXIT_FAILURE;
 		}
-		for (fd = 0; fd < max_sock; fd++)
+		for (fd = min_sock; fd < max_sock; fd++)
 		{
 			if (FD_ISSET(fd, &ready_socks))
 			{
@@ -70,6 +78,7 @@ void handle_packet(int fd, unsigned int (*offset_func)(unsigned char *))
 	struct udphdr *udph = NULL;
 	unsigned short a_count;
 	unsigned int offset;
+	ssize_t bytes_read;
 
 	buffer = (unsigned char *)malloc(BUFFER_SIZE);
 	if (buffer == NULL)
@@ -78,13 +87,23 @@ void handle_packet(int fd, unsigned int (*offset_func)(unsigned char *))
 		exit(EXIT_FAILURE);
 	}
 
-	if (recv(fd, buffer, BUFFER_SIZE, 0) < 0)
+	bytes_read = recv(fd, buffer, BUFFER_SIZE, 0);
+
+	if (bytes_read < 0)
 	{
+		free(buffer);
 		perror("Recv error, failed to get packet\n");
 		exit(EXIT_FAILURE);
 	}
 
 	offset = offset_func(buffer);
+
+	if (bytes_read < offset)
+	{
+		free(buffer);
+		perror("Offset is larger than the packet\n");
+		exit(EXIT_FAILURE);
+	}
 
 	udph = (struct udphdr *)(buffer + offset);
 	if (ntohs(udph->source) == DNS_PORT)
@@ -92,7 +111,8 @@ void handle_packet(int fd, unsigned int (*offset_func)(unsigned char *))
 		// Assuming only one question in a single query since the scenario of multiple questions in a single query is not well defined
 
 		dns_packet = buffer + offset + sizeof(udph);
-		a_count = (dns_packet[6] << 8) | dns_packet[7];
+		// The integer defined by 6th and 7th byte is the number of answers (16-bit integer)
+		a_count = (dns_packet[ANS_COUNT_IDX] << 8) | dns_packet[ANS_COUNT_IDX + 1];
 
 		// Not reading responses with no answers
 		if (a_count > 0)
@@ -154,7 +174,8 @@ int print_domain(unsigned char *dns_packet, int offset)
 	uint8_t label_len = dns_packet[dns_pos];
 	uint16_t domain_name_ptr;
 
-	if (label_len >> 6 == 3)
+	// Check if two first bits are ones
+	if ((label_len & 0xC0) == 0xC0)
 	{
 		domain_name_ptr = ((dns_packet[dns_pos] & 0x3F) << 8) | dns_packet[dns_pos + 1];
 		print_domain(dns_packet, domain_name_ptr);
@@ -174,7 +195,8 @@ int print_domain(unsigned char *dns_packet, int offset)
 		dns_pos = dns_pos + label_len;
 		label_len = dns_packet[dns_pos];
 
-		if (label_len >> 6 == 3)
+		// Check if two first bits are ones
+		if ((label_len & 0xC0) == 0xC0)
 		{
 			domain_name_ptr = ((dns_packet[dns_pos] & 0x3F) << 8) | dns_packet[dns_pos + 1];
 			domain_name[domain_name_pos] = '\0';
